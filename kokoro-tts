@@ -704,7 +704,8 @@ def merge_chunks_to_chapters(split_output_dir, format="wav"):
     # Find all chapter directories
     chapter_dirs = sorted([d for d in os.listdir(split_output_dir) 
                           if d.startswith("chapter_") and os.path.isdir(os.path.join(split_output_dir, d))])
-    
+
+ 
     if not chapter_dirs:
         print(f"No chapter directories found in {split_output_dir}")
         return
@@ -718,6 +719,8 @@ def merge_chunks_to_chapters(split_output_dir, format="wav"):
             print(f"No chunks found in {chapter_dir}")
             continue
 
+        title_list = []
+        repetetive_title = False
         # Read chapter title from info.txt if available
         chapter_title = chapter_dir
         info_file = os.path.join(chapter_path, "info.txt")
@@ -726,6 +729,10 @@ def merge_chunks_to_chapters(split_output_dir, format="wav"):
                 for line in f:
                     if line.startswith("Title:"):
                         chapter_title = line.replace("Title:", "").strip()
+                        if chapter_title in title_list:
+                            repetetive_title = True
+                        else:
+                            title_list.append(chapter_title)
                         break
 
         print(f"\nMerging chunks for {chapter_title}")
@@ -775,8 +782,12 @@ def merge_chunks_to_chapters(split_output_dir, format="wav"):
         print()  # New line after progress
         
         if all_samples:
-            # Create merged file name
-            merged_file = os.path.join(split_output_dir, f"{chapter_dir}.{format}")
+            # Create merged file name based on chapter title (same as chapter_dir if no title)
+            if repetetive_title:
+                merged_file = os.path.join(split_output_dir, f"{chapter_dir}.{format}")
+                repetetive_title = False
+            else:
+                merged_file = os.path.join(split_output_dir, f"{chapter_title}.{format}")
             print(f"Saving merged chapter to {merged_file}")
             print(f"Total duration: {total_duration:.2f} seconds")
             
