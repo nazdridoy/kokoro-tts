@@ -14,6 +14,8 @@ A CLI text-to-speech tool using the Kokoro model, supporting multiple languages,
 - WAV and MP3 output formats
 - Chapter merging capability
 - Detailed debug output option
+- Support for timed pauses between text segments
+- Background music support
 - GPU Support
 
 ## TODO
@@ -75,6 +77,27 @@ Basic usage:
 ./kokoro-tts <input_text_file> [<output_audio_file>] [options]
 ```
 
+### Input File Formatting
+
+#### Text Files
+- Text files should be UTF-8 encoded
+- Avoid trailing or leading spaces
+- Use `PAUSE_X` markers to add pauses, where X is the duration in seconds
+- Each text segment should be on its own line
+
+Example input file (script.txt):
+```text
+Welcome to the presentation
+PAUSE_2.5
+This text comes after a 2.5 second pause
+PAUSE_10
+And this comes after a 10 second pause
+```
+
+#### EPUB Files
+- Standard EPUB format
+- Chapters are automatically detected and processed
+
 ### Commands
 
 - `-h, --help`: Show help message
@@ -93,6 +116,7 @@ Basic usage:
 - `--split-output <dir>`: Save each chunk as separate file in directory
 - `--format <str>`: Audio format: wav or mp3 (default: wav)
 - `--debug`: Show detailed debug information during processing
+- `--background <file>`: Add background audio to the output
 
 ### Input Formats
 
@@ -118,8 +142,11 @@ kokoro-tts input.txt --stream --voice "am_adam,af_sarah"
 # Process EPUB and split into chunks
 kokoro-tts input.epub --split-output ./chunks/ --format mp3
 
-# Stream audio directly
-kokoro-tts input.txt --stream --speed 0.8
+# Process text with pauses and background music
+kokoro-tts script.txt output.wav --background music.mp3
+
+# Process text with pauses and streaming
+kokoro-tts script_with_pauses.txt --stream --speed 0.8
 
 # Merge existing chunks
 kokoro-tts --merge-chunks --split-output ./chunks/ --format wav

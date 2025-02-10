@@ -10,6 +10,9 @@ import signal
 import difflib
 import warnings
 from threading import Event
+import shutil
+import tempfile
+from pydub import AudioSegment
 
 # Third-party imports
 import numpy as np
@@ -115,6 +118,7 @@ Options:
     --split-output <dir> Save each chunk as separate file in directory
     --format <str>      Audio format: wav or mp3 (default: wav)
     --debug             Show detailed debug information
+    --background <file> Add background audio to the output
 
 Input formats:
     .txt               Text file input
@@ -130,6 +134,8 @@ Examples:
     kokoro-tts --help-voices
     kokoro-tts --help-languages
     kokoro-tts input.epub --split-output ./chunks/ --debug
+    kokoro-tts input.txt output.wav --background music.mp3
+    kokoro-tts script_with_pauses.txt output.wav --speed 1.2
     """)
 
 def print_supported_languages():
@@ -424,8 +430,61 @@ def process_chunk_sequential(chunk: str, kokoro: Kokoro, voice: str, speed: floa
         print(f"\nError processing chunk: {e}")
         return None, None
 
+def parse_script_with_pauses(text):
+    """Parse text content and extract pause durations."""
+    lines = text.splitlines()
+    process = [line for line in lines if line]
+    pause_times = []
+    text_chunks = []
+    
+    for line in process:
+        if "PAUSE_" in line:
+            try:
+                pause_times.append(float(line.split("PAUSE_")[1]))
+            except (ValueError, IndexError):
+                print(f"Warning: Invalid pause format in line: {line}")
+                continue
+        else:
+            text_chunks.append(line)
+    
+    return text_chunks, pause_times
+
+def combine_audio_with_pauses(audio_chunks, pause_times, output_file, background_file=None):
+    """Combine audio chunks with specified pauses between them."""
+    final_audio = AudioSegment.empty()
+    
+    for idx, audio_chunk in enumerate(audio_chunks):
+        chunk = AudioSegment.from_file(audio_chunk)
+        final_audio += chunk
+        
+        if idx < len(pause_times):
+            silence = AudioSegment.silent(duration=pause_times[idx] * 1000)
+            final_audio += silence
+    
+    if background_file:
+        try:
+            background = AudioSegment.from_file(background_file)
+            
+            # Trim background to match speech length plus fade out
+            fade_out_duration = 2000  # 2 seconds
+            trimmed_background = background[:len(final_audio) + fade_out_duration]
+            trimmed_background = trimmed_background.fade_out(fade_out_duration)
+            
+            # Lower background volume
+            background_vol = 8  # dB reduction
+            trimmed_background = trimmed_background - background_vol
+            
+            # Overlay speech on background
+            final_audio = trimmed_background.overlay(final_audio)
+            
+        except Exception as e:
+            print(f"Error processing background audio: {e}")
+    
+    final_audio.export(output_file, format=output_file.split('.')[-1])
+    return final_audio
+
 def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, lang="en-us", 
-                         stream=False, split_output=None, format="wav", debug=False):
+                         stream=False, split_output=None, format="wav", debug=False, background_file=None):
     global stop_spinner
     # Load Kokoro model
     try:
@@ -520,8 +579,46 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
     else:
         with open(input_file, 'r', encoding='utf-8') as file:
             text = file.read()
-        # Treat single text file as one chapter
-        chapters = [{'title': 'Chapter 1', 'content': text}]
+            
+        # Check for PAUSE_ markers
+        text_chunks, pause_times = parse_script_with_pauses(text)
+        
+        if pause_times:
+            print(f"Found {len(pause_times)} pause markers")
+            print(f"Pause durations: {pause_times}")
+            
+            # Create temporary directory for chunks
+            temp_dir = tempfile.mkdtemp()
+            chunk_files = []
+            
+            try:
+                # Process each text chunk
+                for i, chunk in enumerate(text_chunks):
+                    chunk_file = os.path.join(temp_dir, f"chunk_{i+1}.{format}")
+                    chunk_files.append(chunk_file)
+                    
+                    # Convert chunk to audio
+                    samples, sample_rate = process_chunk_sequential(chunk, kokoro, voice, speed, lang)
+                    if samples is not None:
+                        sf.write(chunk_file, samples, sample_rate)
+                
+                # Combine chunks with pauses
+                if not output_file:
+                    output_file = f"{os.path.splitext(input_file)[0]}.{format}"
+                
+                combine_audio_with_pauses(chunk_files, pause_times, output_file, background_file)
+                print(f"Created {output_file} with pauses")
+                
+            finally:
+                # Clean up temporary files
+                shutil.rmtree(temp_dir)
+            
+            # Since we've handled the audio generation, we can return here
+            return
+            
+        else:
+            # Handle as single text without pauses
+            chapters = [{'title': 'Single Text', 'content': text}]
 
     if stream:
         import asyncio
@@ -814,7 +911,8 @@ def get_valid_options():
         '--voice',
         '--split-output',
         '--format',
-        '--debug'  # Add debug option
+        '--debug',  # Add debug option
+        '--background'  # Add background audio option
     }
 
 if __name__ == "__main__":
@@ -831,7 +929,7 @@ if __name__ == "__main__":
             if arg not in valid_options:
                 unknown_options.append(arg)
             # Skip the next argument if it's a value for an option that takes parameters
-            elif arg in {'--speed', '--lang', '--voice', '--split-output', '--format'}:
+            elif arg in {'--speed', '--lang', '--voice', '--split-output', '--format', '--background'}:
                 i += 1
         i += 1
     
@@ -876,7 +974,8 @@ if __name__ == "__main__":
     format = "wav"  # default format
     merge_chunks = '--merge-chunks' in sys.argv
     
-    # Parse optional arguments
+    # Add background audio argument
+    background_file = None
     for i, arg in enumerate(sys.argv):
         if arg == '--speed' and i + 1 < len(sys.argv):
             try:
@@ -895,6 +994,8 @@ if __name__ == "__main__":
             if format not in ['wav', 'mp3']:
                 print("Error: Format must be either 'wav' or 'mp3'")
                 sys.exit(1)
+        elif arg == '--background' and i + 1 < len(sys.argv):
+            background_file = sys.argv[i + 1]
     
     # Handle merge chunks operation
     if merge_chunks:
@@ -926,5 +1027,5 @@ if __name__ == "__main__":
     # Convert text to audio with debug flag
     convert_text_to_audio(input_file, output_file, voice=voice, stream=stream, 
                          speed=speed, lang=lang, split_output=split_output, 
-                         format=format, debug=debug)
+                         format=format, debug=debug, background_file=background_file)
 
