@@ -5,3 +5,4 @@ kokoro-onnx==0.3.9
 pymupdf4llm
 sounddevice
 soundfile
+tqdm
