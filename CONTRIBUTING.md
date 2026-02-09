@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Kokoro TTS! This document provide
 ## Development Setup
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/kokoro-tts.git`
+2. Clone your fork: `git clone https://github.com/gondaliyashreyan1/kokoro-tts.git`
 3. Navigate to the project directory: `cd kokoro-tts`
 4. Create a virtual environment: `python -m venv .venv`
 5. Activate the virtual environment:
