@@ -21,7 +21,7 @@ import soundfile as sf
 import sounddevice as sd
 from kokoro_onnx import Kokoro
 import pymupdf4llm
-import fitz
+import pymupdf
 
 warnings.filterwarnings("ignore", category=UserWarning, module='ebooklib')
 warnings.filterwarnings("ignore", category=FutureWarning, module='ebooklib')
@@ -534,7 +534,7 @@ class PdfParser:
         """
         doc = None
         try:
-            doc = fitz.open(self.pdf_path)
+            doc = pymupdf.open(self.pdf_path)
             toc = doc.get_toc()
             
             if not toc:
@@ -1399,4 +1399,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
