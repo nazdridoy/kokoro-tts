@@ -1,0 +1,47 @@
+diff --git a/src/kokoro_onnx/__init__.py b/src/kokoro_onnx/__init__.py
+index 104d198..1a90243 100644
+--- a/src/kokoro_onnx/__init__.py
++++ b/src/kokoro_onnx/__init__.py
+@@ -13,7 +13,13 @@ import numpy as np
+ import onnxruntime as rt
+ from numpy.typing import NDArray
+ 
+-from .config import MAX_PHONEME_LENGTH, SAMPLE_RATE, EspeakConfig, KoKoroConfig
++from .config import (
++    MAX_PHONEME_LENGTH,
++    SAMPLE_RATE,
++    SUPPORTED_LANGUAGES,
++    EspeakConfig,
++    KoKoroConfig,
++)
+ from .log import log
+ from .tokenizer import Tokenizer
+ from .trim import trim as trim_audio
+@@ -261,3 +267,6 @@ class Kokoro:
+ 
+     def get_voices(self) -> list[str]:
+         return list(sorted(self.voices.keys()))
++
++    def get_languages(self) -> list[str]:
++        return SUPPORTED_LANGUAGES
+diff --git a/src/kokoro_onnx/config.py b/src/kokoro_onnx/config.py
+index f5da923..bcb6049 100644
+--- a/src/kokoro_onnx/config.py
++++ b/src/kokoro_onnx/config.py
+@@ -4,7 +4,15 @@ from pathlib import Path
+ 
+ MAX_PHONEME_LENGTH = 510
+ SAMPLE_RATE = 24000
+-
++# https://github.com/espeak-ng/espeak-ng/blob/master/docs/languages.md
++SUPPORTED_LANGUAGES = [
++    "en-us",  # English
++    "en-gb",  # English (British)
++    "fr-fr",  # French
++    "it",  # Italian
++    "ja",  # Japanese
++    "cmn",  # Mandarin Chinese
++]
+ 
+ @dataclass
+ class EspeakConfig:

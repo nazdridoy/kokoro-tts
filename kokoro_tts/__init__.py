@@ -23,12 +23,27 @@ from kokoro_onnx import Kokoro
 import pymupdf4llm
 import pymupdf
 
+# https://github.com/espeak-ng/espeak-ng/blob/master/docs/languages.md
+# SUPPORTED_LANGUAGES: This was removed from kokoro_onnx, which we relied on.
+# Rather than attempting to submit a PR trying to put it back in, I'll include
+# it here directly.
+SUPPORTED_LANGUAGES = [
+    "en-us",  # English
+    "en-gb",  # English (British)
+    "fr-fr",  # French
+    "it",  # Italian
+    "ja",  # Japanese
+    "cmn",  # Mandarin Chinese
+]
+
 warnings.filterwarnings("ignore", category=UserWarning, module='ebooklib')
 warnings.filterwarnings("ignore", category=FutureWarning, module='ebooklib')
 
 # Global flag to stop the spinner and audio
 stop_spinner = False
 stop_audio = False
+
+phoneme_re = re.compile(r'\[([^\]]+)\]\((/[^)]*/)\)')
 
 def check_required_files(model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
     """Check if required model files exist and provide helpful error messages."""
@@ -134,10 +149,65 @@ def chunk_text(text, initial_chunk_size=1000):
     
     return chunks
 
+def has_pronunciation_markdown(text: str) -> bool:
+    """Return True if the text contains [text](/phonemes/) markup."""
+    return bool(phoneme_re.search(text))
+
+
+def convert_pronunciation_markdown_to_phonemes(text: str, kokoro: Kokoro, lang: str, debug: bool = False) -> str:
+    """Convert [text](/phonemes/) markup into a phoneme string for kokoro-onnx."""
+    parts = []
+    last_end = 0
+
+    for match in phoneme_re.finditer(text):
+        plain_text = text[last_end:match.start()]
+        if plain_text:
+            plain_phonemes = kokoro.tokenizer.phonemize(plain_text, lang)
+            if plain_phonemes:
+                parts.append(plain_phonemes)
+
+        visible_text = match.group(1)
+        custom_phonemes = match.group(2)[1:-1].strip()
+
+        if not custom_phonemes:
+            fallback_phonemes = kokoro.tokenizer.phonemize(visible_text, lang)
+            if fallback_phonemes:
+                parts.append(fallback_phonemes)
+        else:
+            token_count = len(kokoro.tokenizer.tokenize(custom_phonemes))
+            if token_count == 0:
+                raise ValueError(
+                    f"Custom pronunciation for '{visible_text}' does not contain any recognized phoneme symbols. "
+                    "Use Kokoro phoneme symbols such as /kˈOkəɹO/, not a plain respelling."
+                )
+            parts.append(custom_phonemes)
+            if debug:
+                print(f"DEBUG: Applied custom pronunciation for '{visible_text}' -> /{custom_phonemes}/")
+
+        last_end = match.end()
+
+    trailing_text = text[last_end:]
+    if trailing_text:
+        trailing_phonemes = kokoro.tokenizer.phonemize(trailing_text, lang)
+        if trailing_phonemes:
+            parts.append(trailing_phonemes)
+
+    combined = ' '.join(part.strip() for part in parts if part and part.strip())
+    combined = re.sub(r'\s+([.,!?;:])', r'\1', combined)
+    return combined.strip()
+
+
+def prepare_tts_text(text: str, kokoro: Kokoro, lang: str, enable_pronunciation_markdown: bool = False, debug: bool = False) -> tuple[str, bool]:
+    """Prepare text for synthesis and report whether the result is already phonemized."""
+    if enable_pronunciation_markdown and has_pronunciation_markdown(text):
+        return convert_pronunciation_markdown_to_phonemes(text, kokoro, lang, debug=debug), True
+    return text, False
+
+
 def validate_language(lang, kokoro):
     """Validate if the language is supported."""
     try:
-        supported_languages = set(kokoro.get_languages())  # Get supported languages from Kokoro
+        supported_languages = set(SUPPORTED_LANGUAGES)  # Get supported languages from Kokoro
         if lang not in supported_languages:
             supported_langs = ', '.join(sorted(supported_languages))
             raise ValueError(f"Unsupported language: {lang}\nSupported languages are: {supported_langs}")
@@ -167,6 +237,7 @@ Options:
     --debug             Show detailed debug information
     --model <path>      Path to kokoro-v1.0.onnx model file (default: ./kokoro-v1.0.onnx)
     --voices <path>     Path to voices-v1.0.bin file (default: ./voices-v1.0.bin)
+    --phonemes          Enable [text](/phonemes/) pronunciation markup in input text
 
 Input formats:
     .txt               Text file input
@@ -187,6 +258,7 @@ Examples:
     kokoro-tts input.epub --split-output ./chunks/ --debug
     kokoro-tts input.txt output.wav --model /path/to/model.onnx --voices /path/to/voices.bin
     kokoro-tts input.txt --model ./models/kokoro-v1.0.onnx --voices ./models/voices-v1.0.bin
+    kokoro-tts input.txt output.wav --phonemes
     """)
 
 def print_supported_languages(model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
@@ -194,11 +266,12 @@ def print_supported_languages(model_path="kokoro-v1.0.onnx", voices_path="voices
     check_required_files(model_path, voices_path)
     try:
         kokoro = Kokoro(model_path, voices_path)
-        languages = sorted(kokoro.get_languages())
+        languages = sorted(SUPPORTED_LANGUAGES)
         print("\nSupported languages:")
         for lang in languages:
             print(f"    {lang}")
         print()
+
     except Exception as e:
         print(f"Error loading model to get supported languages: {e}")
         sys.exit(1)
@@ -705,7 +778,7 @@ class PdfParser:
         return '\n'.join(chapter_text)
 
 def process_chunk_sequential(chunk: str, kokoro: Kokoro, voice: str, speed: float, lang: str, 
-                           retry_count=0, debug=False) -> tuple[list[float] | None, int | None]:
+                           retry_count=0, debug=False, is_phonemes=False) -> tuple[list[float] | None, int | None]:
     """Process a single chunk of text sequentially with automatic chunk size adjustment."""
     try:
         if debug:
@@ -716,7 +789,10 @@ def process_chunk_sequential(chunk: str, kokoro: Kokoro, voice: str, speed: floa
             sys.stdout.write("\n")  # Move back to progress line
             sys.stdout.flush()
         
-        samples, sample_rate = kokoro.create(chunk, voice=voice, speed=speed, lang=lang)
+        samples, sample_rate = kokoro.create(
+            chunk, voice=voice, speed=speed, lang=lang,
+            phonemes=chunk if is_phonemes else None
+        )
         return samples, sample_rate
     except Exception as e:
         error_msg = str(e)
@@ -811,7 +887,7 @@ def process_chunk_sequential(chunk: str, kokoro: Kokoro, voice: str, speed: floa
 
 def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, lang="en-us", 
                          stream=False, split_output=None, format="wav", debug=False, stdin_indicators=None,
-                         model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
+                         model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin", enable_pronunciation_markdown=False):
     global stop_spinner
     
     # Define stdin indicators if not provided
@@ -824,6 +900,13 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
     # Load Kokoro model
     try:
         kokoro = Kokoro(model_path, voices_path)
+
+        # This is where you might set the available compute methods to use
+        # You can see those available on your system with the following command:
+        # $ python3 -c "import onnxruntime as ort; print(ort.get_available_providers())"
+        # ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+        # kokoro.sess.set_providers(['CUDAExecutionProvider', 'TensorrtExecutionProvider', 'CPUExecutionProvider'])
+        # kokoro.sess.set_providers(['CPUExecutionProvider'])
 
         # Validate language after loading model
         lang = validate_language(lang, kokoro)
@@ -929,13 +1012,24 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
         # Treat single text file as one chapter
         chapters = [{'title': 'Chapter 1', 'content': text}]
 
+    for chapter in chapters:
+        tts_content, is_phonemes = prepare_tts_text(
+            chapter['content'],
+            kokoro,
+            lang,
+            enable_pronunciation_markdown=enable_pronunciation_markdown,
+            debug=debug,
+        )
+        chapter['tts_content'] = tts_content
+        chapter['tts_is_phonemes'] = is_phonemes
+
     if stream:
         import asyncio
         # Stream each chapter
         for chapter in chapters:
             print(f"\nStreaming: {chapter['title']}")
-            chunks = chunk_text(chapter['content'], initial_chunk_size=1000)
-            asyncio.run(stream_audio(kokoro, chapter['content'], voice, speed, lang, debug))
+            chunks = chunk_text(chapter.get('tts_content', chapter['content']), initial_chunk_size=1000)
+            asyncio.run(stream_audio(kokoro, chapter.get('tts_content', chapter['content']), voice, speed, lang, debug, is_phonemes=chapter.get('tts_is_phonemes', False)))
     else:
         if split_output:
             os.makedirs(split_output, exist_ok=True)
@@ -947,7 +1041,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
                 if os.path.exists(chapter_dir):
                     info_file = os.path.join(chapter_dir, "info.txt")
                     if os.path.exists(info_file):
-                        chunks = chunk_text(chapter['content'], initial_chunk_size=1000)
+                        chunks = chunk_text(chapter.get('tts_content', chapter['content']), initial_chunk_size=1000)
                         total_chunks = len(chunks)
                         existing_chunks = len([f for f in os.listdir(chapter_dir) 
                                             if f.startswith("chunk_") and f.endswith(f".{format}")])
@@ -967,7 +1061,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
                     with open(info_file, "w", encoding="utf-8") as f:
                         f.write(f"Title: {chapter['title']}\n")
                 
-                chunks = chunk_text(chapter['content'], initial_chunk_size=1000)
+                chunks = chunk_text(chapter.get('tts_content', chapter['content']), initial_chunk_size=1000)
                 total_chunks = len(chunks)
                 processed_chunks = len([f for f in os.listdir(chapter_dir) 
                                      if f.startswith("chunk_") and f.endswith(f".{format}")])
@@ -996,7 +1090,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
                     try:
                         samples, sample_rate = process_chunk_sequential(
                             chunk, kokoro, voice, speed, lang, 
-                            retry_count=0, debug=debug  # Add retry parameters
+                            retry_count=0, debug=debug, is_phonemes=chapter.get('tts_is_phonemes', False)  # Add retry parameters
                         )
                         if samples is not None:
                             sf.write(chunk_file, samples, sample_rate)
@@ -1023,7 +1117,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
             
             for chapter_num, chapter in enumerate(chapters, 1):
                 print(f"\nProcessing: {chapter['title']}")
-                chunks = chunk_text(chapter['content'], initial_chunk_size=1000)
+                chunks = chunk_text(chapter.get('tts_content', chapter['content']), initial_chunk_size=1000)
                 processed_chunks = 0
                 total_chunks = len(chunks)
                 
@@ -1041,7 +1135,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
                     try:
                         samples, sr = process_chunk_sequential(
                             chunk, kokoro, voice, speed, lang,
-                            retry_count=0, debug=debug  # Add retry parameters
+                            retry_count=0, debug=debug, is_phonemes=chapter.get('tts_is_phonemes', False)  # Add retry parameters
                         )
                         if samples is not None:
                             if sample_rate is None:
@@ -1063,7 +1157,7 @@ def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, l
                 sf.write(output_file, all_samples, sample_rate)
                 print(f"Created {output_file}")
 
-async def stream_audio(kokoro, text, voice, speed, lang, debug=False):
+async def stream_audio(kokoro, text, voice, speed, lang, debug=False, is_phonemes=False):
     global stop_spinner, stop_audio
     stop_spinner = False
     stop_audio = False
@@ -1083,7 +1177,8 @@ async def stream_audio(kokoro, text, voice, speed, lang, debug=False):
         spinner_thread.start()
         
         async for samples, sample_rate in kokoro.create_stream(
-            chunk, voice=voice, speed=speed, lang=lang
+            chunk, voice=voice, speed=speed, lang=lang,
+            phonemes=chunk if is_phonemes else None
         ):
             if stop_audio:
                 break
@@ -1243,6 +1338,7 @@ def get_valid_options():
         '--debug',
         '--model',
         '--voices',
+        '--phonemes',
         '-v', '--version'
     }
 
@@ -1336,6 +1432,7 @@ def main():
     split_output = None
     format = "wav"  # default format
     merge_chunks = '--merge-chunks' in sys.argv
+    enable_pronunciation_markdown = '--phonemes' in sys.argv
     model_path = "kokoro-v1.0.onnx"  # default model path
     voices_path = "voices-v1.0.bin"  # default voices path
     
@@ -1394,7 +1491,8 @@ def main():
     convert_text_to_audio(input_file, output_file, voice=voice, stream=stream, 
                          speed=speed, lang=lang, split_output=split_output, 
                          format=format, debug=debug, stdin_indicators=stdin_indicators,
-                         model_path=model_path, voices_path=voices_path)
+                         model_path=model_path, voices_path=voices_path,
+                         enable_pronunciation_markdown=enable_pronunciation_markdown)
 
 
 if __name__ == '__main__':
